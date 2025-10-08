@@ -216,31 +216,39 @@ class IntraScaleSharedEncoder(nn.Module):
     Shares information between adjacent scales via INR.
     """
     
-    def __init__(self, feature_dim=64):
+    def __init__(self, lower_dim=64, upper_dim=128):
         super(IntraScaleSharedEncoder, self).__init__()
         
+        # Encoder for lower scale features
         self.encoder = nn.Sequential(
-            nn.Conv2d(feature_dim, feature_dim * 2, kernel_size=3, padding=1),
+            nn.Conv2d(lower_dim, lower_dim * 2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(feature_dim * 2, feature_dim, kernel_size=3, padding=1)
+            nn.Conv2d(lower_dim * 2, lower_dim, kernel_size=3, padding=1)
         )
         
-        self.inr = ImplicitNeuralRepresentation(feature_dim=feature_dim)
+        # Channel projection from lower to upper dimension
+        self.channel_proj = nn.Conv2d(lower_dim, upper_dim, kernel_size=1)
+        
+        # INR works with upper dimension
+        self.inr = ImplicitNeuralRepresentation(feature_dim=upper_dim)
         
     def forward(self, feat_lower, feat_upper):
         """
         Args:
-            feat_lower: Features from lower scale [B, C, H_l, W_l]
-            feat_upper: Features from upper scale [B, C, H_u, W_u]
+            feat_lower: Features from lower scale [B, C_lower, H_l, W_l]
+            feat_upper: Features from upper scale [B, C_upper, H_u, W_u]
         Returns:
             Enhanced features for both scales
         """
         # Encode lower scale
         encoded_lower = self.encoder(feat_lower)
         
-        # Upsample to upper scale resolution and apply INR
-        upsampled = F.interpolate(encoded_lower, size=feat_upper.shape[-2:],
+        # Project to upper dimension and upsample to upper scale resolution
+        projected = self.channel_proj(encoded_lower)
+        upsampled = F.interpolate(projected, size=feat_upper.shape[-2:],
                                  mode='bilinear', align_corners=False)
+        
+        # Apply INR
         inr_features = self.inr(upsampled)
         
         # Enhance upper scale features
@@ -262,9 +270,9 @@ if __name__ == "__main__":
     print(f"Output shape: {output.shape}")
     
     # Test intra-scale shared encoder
-    encoder = IntraScaleSharedEncoder(feature_dim=64).to(device)
+    encoder = IntraScaleSharedEncoder(lower_dim=64, upper_dim=128).to(device)
     feat_lower = torch.randn(2, 64, 32, 32).to(device)
-    feat_upper = torch.randn(2, 64, 64, 64).to(device)
+    feat_upper = torch.randn(2, 128, 64, 64).to(device)
     
     enc_lower, enh_upper = encoder(feat_lower, feat_upper)
     print(f"\nIntra-scale shared encoder:")

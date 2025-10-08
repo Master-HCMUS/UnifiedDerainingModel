@@ -52,8 +52,12 @@ class NeRDRainBranch(nn.Module):
         ])
         
         # Intra-scale shared encoders (closed-loop)
+        # Each encoder connects scale i (lower) to scale i+1 (upper)
         self.shared_encoders = nn.ModuleList([
-            IntraScaleSharedEncoder(feature_dim=base_dim * (2 ** i))
+            IntraScaleSharedEncoder(
+                lower_dim=base_dim * (2 ** i),
+                upper_dim=base_dim * (2 ** (i + 1))
+            )
             for i in range(self.num_scales - 1)
         ])
         

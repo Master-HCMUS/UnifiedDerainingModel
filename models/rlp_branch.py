@@ -114,6 +114,8 @@ class RLPBranch(nn.Module):
             rlp_map: Rain location prior [B, 1, H, W]
             features: Multi-scale features for fusion
         """
+        original_size = x.shape[2:]
+        
         # Get rain location prior
         rlp_map, rlp_features = self.rlp_module(x)
         
@@ -132,7 +134,16 @@ class RLPBranch(nn.Module):
         # Decoder with skip connections
         d3 = self.dec3(bottleneck, e3_enhanced)
         d2 = self.dec2(d3, e2_enhanced)
+        
+        # Ensure spatial dimensions match before concatenation for dec1
+        if d2.shape[2:] != e1_enhanced.shape[2:]:
+            d2 = F.interpolate(d2, size=e1_enhanced.shape[2:], mode='bilinear', align_corners=False)
+        
         d1 = self.dec1(torch.cat([d2, e1_enhanced], dim=1))
+        
+        # Ensure output matches input size
+        if d1.shape[2:] != original_size:
+            d1 = F.interpolate(d1, size=original_size, mode='bilinear', align_corners=False)
         
         # Residual learning: predict rain, subtract from input
         rain = d1
