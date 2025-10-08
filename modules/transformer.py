@@ -78,12 +78,15 @@ class TransformerBlock(nn.Module):
 
 class ScaleSpecificTransformer(nn.Module):
     """
-    Scale-specific Transformer branch for learning features at one scale.
+    Scale-specific Transformer branch with patch-based attention for memory efficiency.
+    Processes image in patches to avoid huge attention matrices.
     """
     
     def __init__(self, dim, depth=4, num_heads=8, mlp_ratio=4., 
-                 qkv_bias=False, attn_drop=0., proj_drop=0., dropout=0.):
+                 qkv_bias=False, attn_drop=0., proj_drop=0., dropout=0., patch_size=8):
         super(ScaleSpecificTransformer, self).__init__()
+        
+        self.patch_size = patch_size
         
         self.blocks = nn.ModuleList([
             TransformerBlock(dim, num_heads, mlp_ratio, qkv_bias, 
@@ -100,9 +103,54 @@ class ScaleSpecificTransformer(nn.Module):
         Returns:
             Output features [B, N, C]
         """
-        for block in self.blocks:
-            x = block(x)
-        x = self.norm(x)
+        # MEMORY OPTIMIZATION: Process in patches if N is too large
+        B, N, C = x.shape
+        
+        # If sequence is too long (>16K tokens), use patch processing
+        if N > 16384:  # 128×128
+            # Infer H, W from N (assume square or use stored dimensions)
+            H = W = int(math.sqrt(N))
+            
+            # Reshape to [B, H, W, C]
+            x_spatial = x.view(B, H, W, C)
+            
+            # Process in non-overlapping patches
+            P = self.patch_size
+            pH = (H + P - 1) // P
+            pW = (W + P - 1) // P
+            
+            # Pad if needed
+            pad_h = pH * P - H
+            pad_w = pW * P - W
+            if pad_h > 0 or pad_w > 0:
+                x_spatial = F.pad(x_spatial, (0, 0, 0, pad_w, 0, pad_h))
+            
+            # Split into patches: [B, pH, P, pW, P, C] -> [B*pH*pW, P*P, C]
+            patches = x_spatial.view(B, pH, P, pW, P, C)
+            patches = patches.permute(0, 1, 3, 2, 4, 5).contiguous()
+            patches = patches.view(B * pH * pW, P * P, C)
+            
+            # Process each patch
+            for block in self.blocks:
+                patches = block(patches)
+            patches = self.norm(patches)
+            
+            # Reconstruct: [B*pH*pW, P*P, C] -> [B, H, W, C]
+            patches = patches.view(B, pH, pW, P, P, C)
+            patches = patches.permute(0, 1, 3, 2, 4, 5).contiguous()
+            x_spatial = patches.view(B, pH * P, pW * P, C)
+            
+            # Remove padding
+            if pad_h > 0 or pad_w > 0:
+                x_spatial = x_spatial[:, :H, :W, :]
+            
+            x = x_spatial.view(B, N, C)
+        else:
+            # Normal processing for small sequences
+            for block in self.blocks:
+                x = block(x)
+            x = self.norm(x)
+        
         return x
 
 
@@ -110,10 +158,11 @@ class BidirectionalMultiscaleTransformer(nn.Module):
     """
     Bidirectional Multiscale Transformer with unequal branches.
     Each branch processes features at a different scale.
+    Memory-efficient with patch-based attention for large images.
     """
     
-    def __init__(self, scales=[1, 2, 4], base_dim=64, depths=[4, 4, 4], 
-                 num_heads=[4, 8, 16], mlp_ratio=4.):
+    def __init__(self, scales=[1, 2, 4], base_dim=64, depths=[2, 2, 2], 
+                 num_heads=[4, 8, 16], mlp_ratio=4., patch_size=8):
         super(BidirectionalMultiscaleTransformer, self).__init__()
         
         self.scales = scales
@@ -127,11 +176,15 @@ class BidirectionalMultiscaleTransformer(nn.Module):
             dim = base_dim * (2 ** i)  # Increase capacity for smaller scales
             self.dims.append(dim)
             
+            # Use larger patches for finer scales (more tokens)
+            scale_patch_size = patch_size * (2 ** (self.num_scales - 1 - i))
+            
             transformer = ScaleSpecificTransformer(
                 dim=dim, 
                 depth=depth, 
                 num_heads=heads, 
-                mlp_ratio=mlp_ratio
+                mlp_ratio=mlp_ratio,
+                patch_size=scale_patch_size
             )
             self.transformers.append(transformer)
         

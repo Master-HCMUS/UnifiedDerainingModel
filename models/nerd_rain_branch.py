@@ -36,13 +36,14 @@ class NeRDRainBranch(nn.Module):
             nn.ReLU(inplace=True)
         )
         
-        # Bidirectional Multiscale Transformer
+        # Bidirectional Multiscale Transformer (memory-efficient configuration)
         self.transformer = BidirectionalMultiscaleTransformer(
             scales=scales,
             base_dim=base_dim,
-            depths=[4, 4, 4],
+            depths=[2, 2, 2],  # Reduced from [4,4,4] for memory efficiency
             num_heads=[4, 8, 16],
-            mlp_ratio=4.
+            mlp_ratio=4.,
+            patch_size=8  # Patch-based attention for large images
         )
         
         # Implicit Neural Representations for each scale
