@@ -36,21 +36,24 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     """Decoder block for feature reconstruction."""
     
-    def __init__(self, in_channels, out_channels, scale_factor=2):
+    def __init__(self, in_channels, skip_channels, out_channels, scale_factor=2):
         super(DecoderBlock, self).__init__()
         self.upsample = nn.Upsample(scale_factor=scale_factor, mode='bilinear', 
                                     align_corners=False)
+        # After concatenation, channels = in_channels + skip_channels
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels + skip_channels, out_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True)
         )
         
-    def forward(self, x, skip=None):
+    def forward(self, x, skip):
         x = self.upsample(x)
-        if skip is not None:
-            x = torch.cat([x, skip], dim=1)
+        # Ensure spatial dimensions match
+        if x.shape[2:] != skip.shape[2:]:
+            x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=False)
+        x = torch.cat([x, skip], dim=1)
         x = self.conv(x)
         return x
 
@@ -90,9 +93,12 @@ class RLPBranch(nn.Module):
             reduction=16
         )
         
-        # Decoder
-        self.dec3 = DecoderBlock(base_channels * 4, base_channels * 2, scale_factor=2)
-        self.dec2 = DecoderBlock(base_channels * 4, base_channels, scale_factor=2)  # *4 due to skip
+        # Decoder with proper channel dimensions
+        # dec3: bottleneck (256) + e3_enhanced (256) -> 128
+        self.dec3 = DecoderBlock(base_channels * 4, base_channels * 4, base_channels * 2, scale_factor=2)
+        # dec2: d3 (128) + e2_enhanced (128) -> 64
+        self.dec2 = DecoderBlock(base_channels * 2, base_channels * 2, base_channels, scale_factor=2)
+        # dec1: d2 (64) + e1_enhanced (64) -> 3
         self.dec1 = nn.Sequential(
             nn.Conv2d(base_channels * 2, base_channels, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
