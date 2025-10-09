@@ -49,8 +49,12 @@ class NeRDRainBranch(nn.Module):
         )
         
         # Implicit Neural Representations for each scale
+        # Using simplified conv-based version for memory efficiency
         self.inr_modules = nn.ModuleList([
-            ImplicitNeuralRepresentation(feature_dim=base_dim * (2 ** i))
+            ImplicitNeuralRepresentation(
+                feature_dim=base_dim * (2 ** i),
+                use_simplified=True  # Memory-efficient conv-based INR
+            )
             for i in range(self.num_scales)
         ])
         
