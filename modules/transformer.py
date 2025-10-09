@@ -106,8 +106,8 @@ class ScaleSpecificTransformer(nn.Module):
         # MEMORY OPTIMIZATION: Process in patches if N is too large
         B, N, C = x.shape
         
-        # If sequence is too long (>16K tokens), use patch processing
-        if N > 16384:  # 128×128
+        # If sequence is too long (>8K tokens = 90×90), use patch processing
+        if N > 8192:  # More aggressive threshold
             # Infer H, W from N (assume square or use stored dimensions)
             H = W = int(math.sqrt(N))
             
@@ -158,15 +158,16 @@ class BidirectionalMultiscaleTransformer(nn.Module):
     """
     Bidirectional Multiscale Transformer with unequal branches.
     Each branch processes features at a different scale.
-    Memory-efficient with patch-based attention for large images.
+    Memory-efficient: Uses depthwise convolutions instead of full self-attention for large spatial dims.
     """
     
     def __init__(self, scales=[1, 2, 4], base_dim=64, depths=[2, 2, 2], 
-                 num_heads=[4, 8, 16], mlp_ratio=4., patch_size=8):
+                 num_heads=[4, 8, 16], mlp_ratio=4., patch_size=8, use_conv=True):
         super(BidirectionalMultiscaleTransformer, self).__init__()
         
         self.scales = scales
         self.num_scales = len(scales)
+        self.use_conv = use_conv  # Use conv instead of attention for memory efficiency
         
         # Scale-specific transformers with different capacities
         self.transformers = nn.ModuleList()
@@ -176,16 +177,33 @@ class BidirectionalMultiscaleTransformer(nn.Module):
             dim = base_dim * (2 ** i)  # Increase capacity for smaller scales
             self.dims.append(dim)
             
-            # Use larger patches for finer scales (more tokens)
-            scale_patch_size = patch_size * (2 ** (self.num_scales - 1 - i))
-            
-            transformer = ScaleSpecificTransformer(
-                dim=dim, 
-                depth=depth, 
-                num_heads=heads, 
-                mlp_ratio=mlp_ratio,
-                patch_size=scale_patch_size
-            )
+            if use_conv:
+                # Use depthwise separable convolutions instead of transformer
+                # Much more memory efficient while still capturing spatial patterns
+                layers = []
+                for _ in range(depth):
+                    layers.extend([
+                        # Depthwise convolution
+                        nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim),
+                        nn.BatchNorm2d(dim),
+                        nn.GELU(),
+                        # Pointwise convolution
+                        nn.Conv2d(dim, dim * mlp_ratio, kernel_size=1),
+                        nn.GELU(),
+                        nn.Conv2d(dim * mlp_ratio, dim, kernel_size=1),
+                    ])
+                transformer = nn.Sequential(*layers)
+            else:
+                # Use larger patches for finer scales (more tokens)
+                scale_patch_size = patch_size * (2 ** (self.num_scales - 1 - i))
+                
+                transformer = ScaleSpecificTransformer(
+                    dim=dim, 
+                    depth=depth, 
+                    num_heads=heads, 
+                    mlp_ratio=mlp_ratio,
+                    patch_size=scale_patch_size
+                )
             self.transformers.append(transformer)
         
         # Downsampling and upsampling for scale conversion
@@ -225,14 +243,19 @@ class BidirectionalMultiscaleTransformer(nn.Module):
         for i, (scale_input, transformer) in enumerate(zip(scale_inputs, self.transformers)):
             B, C_i, H_i, W_i = scale_input.shape
             
-            # Reshape to [B, N, C] for transformer
-            tokens = scale_input.flatten(2).transpose(1, 2)  # [B, H*W, C]
+            if self.use_conv:
+                # Direct conv processing (memory efficient)
+                feature_map = transformer(scale_input)
+            else:
+                # Reshape to [B, N, C] for transformer
+                tokens = scale_input.flatten(2).transpose(1, 2)  # [B, H*W, C]
+                
+                # Process with transformer
+                transformed = transformer(tokens)
+                
+                # Reshape back to [B, C, H, W]
+                feature_map = transformed.transpose(1, 2).reshape(B, C_i, H_i, W_i)
             
-            # Process with transformer
-            transformed = transformer(tokens)
-            
-            # Reshape back to [B, C, H, W]
-            feature_map = transformed.transpose(1, 2).reshape(B, C_i, H_i, W_i)
             scale_features.append(feature_map)
         
         # Backward pass: information flows from fine to coarse

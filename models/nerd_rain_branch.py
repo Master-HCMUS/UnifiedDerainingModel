@@ -37,13 +37,15 @@ class NeRDRainBranch(nn.Module):
         )
         
         # Bidirectional Multiscale Transformer (memory-efficient configuration)
+        # Using depthwise separable convolutions instead of self-attention for memory efficiency
         self.transformer = BidirectionalMultiscaleTransformer(
             scales=scales,
             base_dim=base_dim,
-            depths=[2, 2, 2],  # Reduced from [4,4,4] for memory efficiency
+            depths=[2, 2, 2],  # Number of conv/transformer blocks per scale
             num_heads=[4, 8, 16],
-            mlp_ratio=4.,
-            patch_size=8  # Patch-based attention for large images
+            mlp_ratio=4,  # Expansion ratio in feed-forward/pointwise conv
+            patch_size=8,
+            use_conv=True  # Use conv instead of attention (much more memory efficient)
         )
         
         # Implicit Neural Representations for each scale

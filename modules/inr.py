@@ -122,39 +122,65 @@ class CoordinateMLP(nn.Module):
 
 class ImplicitNeuralRepresentation(nn.Module):
     """
-    Implicit Neural Representation (INR) Module with coarse and fine grids.
-    Learns common rain degradation representations from diverse inputs.
+    Implicit Neural Representation (INR) Module - Memory-efficient version.
+    Uses conv-based approximation instead of per-coordinate MLPs.
     """
     
     def __init__(self, feature_dim=64, coarse_hidden=256, fine_hidden=128,
-                 coarse_layers=4, fine_layers=3):
+                 coarse_layers=4, fine_layers=3, use_simplified=True):
         super(ImplicitNeuralRepresentation, self).__init__()
         
-        # Coarse-level MLP for global structure
-        self.coarse_mlp = CoordinateMLP(
-            coord_dim=2,
-            hidden_dim=coarse_hidden,
-            out_dim=feature_dim,
-            num_layers=coarse_layers,
-            use_sine=True,
-            omega_0=30.0
-        )
+        self.use_simplified = use_simplified
         
-        # Fine-level MLP for local details
-        self.fine_mlp = CoordinateMLP(
-            coord_dim=2,
-            hidden_dim=fine_hidden,
-            out_dim=feature_dim,
-            num_layers=fine_layers,
-            use_sine=True,
-            omega_0=60.0  # Higher frequency for fine details
-        )
-        
-        # Feature fusion
-        self.fusion = nn.Sequential(
-            nn.Conv2d(feature_dim * 2, feature_dim, kernel_size=1),
-            nn.ReLU(inplace=True)
-        )
+        if use_simplified:
+            # SIMPLIFIED: Use convolutions instead of coordinate MLPs
+            # Much more memory efficient while maintaining similar functionality
+            self.coarse_net = nn.Sequential(
+                nn.Conv2d(feature_dim, coarse_hidden, kernel_size=7, padding=3),
+                nn.GELU(),
+                nn.Conv2d(coarse_hidden, coarse_hidden, kernel_size=5, padding=2),
+                nn.GELU(),
+                nn.Conv2d(coarse_hidden, feature_dim, kernel_size=3, padding=1)
+            )
+            
+            self.fine_net = nn.Sequential(
+                nn.Conv2d(feature_dim, fine_hidden, kernel_size=3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(fine_hidden, feature_dim, kernel_size=3, padding=1)
+            )
+            
+            # Feature fusion
+            self.fusion = nn.Sequential(
+                nn.Conv2d(feature_dim * 2, feature_dim, kernel_size=1),
+                nn.GELU()
+            )
+        else:
+            # ORIGINAL: Coordinate-based MLPs (memory intensive!)
+            # Coarse-level MLP for global structure
+            self.coarse_mlp = CoordinateMLP(
+                coord_dim=2,
+                hidden_dim=coarse_hidden,
+                out_dim=feature_dim,
+                num_layers=coarse_layers,
+                use_sine=True,
+                omega_0=30.0
+            )
+            
+            # Fine-level MLP for local details
+            self.fine_mlp = CoordinateMLP(
+                coord_dim=2,
+                hidden_dim=fine_hidden,
+                out_dim=feature_dim,
+                num_layers=fine_layers,
+                use_sine=True,
+                omega_0=60.0  # Higher frequency for fine details
+            )
+            
+            # Feature fusion
+            self.fusion = nn.Sequential(
+                nn.Conv2d(feature_dim * 2, feature_dim, kernel_size=1),
+                nn.ReLU(inplace=True)
+            )
         
     def create_coordinate_grid(self, height, width, device):
         """
@@ -183,29 +209,43 @@ class ImplicitNeuralRepresentation(nn.Module):
             INR-enhanced features [B, C_out, H, W]
         """
         B, C, H, W = x.shape
-        device = x.device
         
-        # Create coordinate grid
-        coords = self.create_coordinate_grid(H, W, device)
-        coords = coords.repeat(B, 1, 1, 1)  # [B, H, W, 2]
-        
-        # Generate coarse and fine features
-        coarse_features = self.coarse_mlp(coords)  # [B, H, W, C]
-        fine_features = self.fine_mlp(coords)      # [B, H, W, C]
-        
-        # Permute to [B, C, H, W]
-        coarse_features = coarse_features.permute(0, 3, 1, 2)
-        fine_features = fine_features.permute(0, 3, 1, 2)
-        
-        # Fuse coarse and fine
-        combined = torch.cat([coarse_features, fine_features], dim=1)
-        fused_features = self.fusion(combined)
-        
-        # Add residual connection with input
-        if C == fused_features.shape[1]:
+        if self.use_simplified:
+            # SIMPLIFIED: Direct conv processing (memory efficient)
+            coarse_features = self.coarse_net(x)
+            fine_features = self.fine_net(x)
+            
+            # Fuse coarse and fine
+            combined = torch.cat([coarse_features, fine_features], dim=1)
+            fused_features = self.fusion(combined)
+            
+            # Add residual connection with input
             output = x + fused_features
         else:
-            output = fused_features
+            # ORIGINAL: Coordinate-based approach (memory intensive)
+            device = x.device
+            
+            # Create coordinate grid
+            coords = self.create_coordinate_grid(H, W, device)
+            coords = coords.repeat(B, 1, 1, 1)  # [B, H, W, 2]
+            
+            # Generate coarse and fine features
+            coarse_features = self.coarse_mlp(coords)  # [B, H, W, C]
+            fine_features = self.fine_mlp(coords)      # [B, H, W, C]
+            
+            # Permute to [B, C, H, W]
+            coarse_features = coarse_features.permute(0, 3, 1, 2)
+            fine_features = fine_features.permute(0, 3, 1, 2)
+            
+            # Fuse coarse and fine
+            combined = torch.cat([coarse_features, fine_features], dim=1)
+            fused_features = self.fusion(combined)
+            
+            # Add residual connection with input
+            if C == fused_features.shape[1]:
+                output = x + fused_features
+            else:
+                output = fused_features
         
         return output
 
