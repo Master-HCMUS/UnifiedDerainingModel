@@ -9,39 +9,83 @@ import torch.nn.functional as F
 
 
 class CrossAttention(nn.Module):
-    """Cross-attention between two feature sets."""
+    """
+    Memory-efficient cross-attention using channel-wise attention.
+    Avoids spatial attention matrices that cause memory issues.
+    """
     
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=8, use_spatial_attn=False):
         super(CrossAttention, self).__init__()
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        self.dim = dim
+        self.use_spatial_attn = use_spatial_attn
         
-        self.q_proj = nn.Linear(dim, dim)
-        self.k_proj = nn.Linear(dim, dim)
-        self.v_proj = nn.Linear(dim, dim)
-        self.out_proj = nn.Linear(dim, dim)
+        if use_spatial_attn:
+            # Original spatial attention (MEMORY INTENSIVE - for small images only)
+            self.num_heads = num_heads
+            self.head_dim = dim // num_heads
+            self.scale = self.head_dim ** -0.5
+            
+            self.q_proj = nn.Linear(dim, dim)
+            self.k_proj = nn.Linear(dim, dim)
+            self.v_proj = nn.Linear(dim, dim)
+            self.out_proj = nn.Linear(dim, dim)
+        else:
+            # Channel-wise attention (MEMORY EFFICIENT)
+            # Uses convolutions to capture cross-feature interactions
+            self.query_conv = nn.Conv2d(dim, dim, kernel_size=1)
+            self.key_conv = nn.Conv2d(dim, dim, kernel_size=1)
+            self.value_conv = nn.Conv2d(dim, dim, kernel_size=1)
+            
+            # Channel attention mechanism
+            self.channel_attn = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(dim * 2, dim // 4, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(dim // 4, dim, kernel_size=1),
+                nn.Sigmoid()
+            )
+            
+            self.out_conv = nn.Conv2d(dim, dim, kernel_size=1)
         
     def forward(self, query, key_value):
         """
         Args:
-            query: [B, N1, C]
-            key_value: [B, N2, C]
+            query: [B, N1, C] or [B, C, H, W]
+            key_value: [B, N2, C] or [B, C, H, W]
         Returns:
-            Output: [B, N1, C]
+            Output: Same shape as query
         """
-        B, N1, C = query.shape
-        N2 = key_value.shape[1]
-        
-        q = self.q_proj(query).reshape(B, N1, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(key_value).reshape(B, N2, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(key_value).reshape(B, N2, self.num_heads, self.head_dim).transpose(1, 2)
-        
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        
-        out = (attn @ v).transpose(1, 2).reshape(B, N1, C)
-        out = self.out_proj(out)
+        if self.use_spatial_attn:
+            # Original spatial attention (for backward compatibility)
+            B, N1, C = query.shape
+            N2 = key_value.shape[1]
+            
+            q = self.q_proj(query).reshape(B, N1, self.num_heads, self.head_dim).transpose(1, 2)
+            k = self.k_proj(key_value).reshape(B, N2, self.num_heads, self.head_dim).transpose(1, 2)
+            v = self.v_proj(key_value).reshape(B, N2, self.num_heads, self.head_dim).transpose(1, 2)
+            
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            
+            out = (attn @ v).transpose(1, 2).reshape(B, N1, C)
+            out = self.out_proj(out)
+        else:
+            # Channel-wise attention (memory efficient)
+            # Input is [B, C, H, W] format
+            q = self.query_conv(query)
+            k = self.key_conv(key_value)
+            v = self.value_conv(key_value)
+            
+            # Channel attention weights from both features
+            combined = torch.cat([q, k], dim=1)
+            attn_weights = self.channel_attn(combined)
+            
+            # Apply attention to value
+            out = v * attn_weights
+            out = self.out_conv(out)
+            
+            # Residual connection
+            out = query + out
         
         return out
 
@@ -95,9 +139,9 @@ class AdaptiveFusionModule(nn.Module):
             nn.Conv2d(feature_dim, feature_dim, kernel_size=3, padding=1)
         )
         
-        # Cross-attention for feature interaction
-        self.cross_attn_rlp2nerd = CrossAttention(feature_dim, num_heads=8)
-        self.cross_attn_nerd2rlp = CrossAttention(feature_dim, num_heads=8)
+        # Cross-attention for feature interaction (memory-efficient channel-wise mode)
+        self.cross_attn_rlp2nerd = CrossAttention(feature_dim, num_heads=8, use_spatial_attn=False)
+        self.cross_attn_nerd2rlp = CrossAttention(feature_dim, num_heads=8, use_spatial_attn=False)
         
         # Illumination-conditioned gating
         self.gate_generator = nn.Sequential(
@@ -147,17 +191,10 @@ class AdaptiveFusionModule(nn.Module):
         rlp_features = self.rlp_feat_extractor(rlp_output)  # [B, D, H, W]
         nerd_features = self.nerd_feat_extractor(nerd_output)  # [B, D, H, W]
         
-        # Reshape for cross-attention [B, N, D] where N = H*W
-        rlp_tokens = rlp_features.flatten(2).transpose(1, 2)
-        nerd_tokens = nerd_features.flatten(2).transpose(1, 2)
-        
-        # Apply cross-attention
-        rlp_enhanced = self.cross_attn_rlp2nerd(rlp_tokens, nerd_tokens)
-        nerd_enhanced = self.cross_attn_nerd2rlp(nerd_tokens, rlp_tokens)
-        
-        # Reshape back to [B, D, H, W]
-        rlp_enhanced = rlp_enhanced.transpose(1, 2).reshape(B, self.feature_dim, H, W)
-        nerd_enhanced = nerd_enhanced.transpose(1, 2).reshape(B, self.feature_dim, H, W)
+        # Apply memory-efficient cross-attention (channel-wise)
+        # No flattening needed - works directly on spatial features
+        rlp_enhanced = self.cross_attn_rlp2nerd(rlp_features, nerd_features)  # [B, D, H, W]
+        nerd_enhanced = self.cross_attn_nerd2rlp(nerd_features, rlp_features)  # [B, D, H, W]
         
         # Generate channel-wise gates from illumination weights
         night_weight = illumination_weights['night_weight']  # [B, 1]
