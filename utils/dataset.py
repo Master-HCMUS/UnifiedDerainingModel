@@ -81,16 +81,32 @@ class DerainingDataset(Dataset):
             h, w = clean.shape[-2:]
             rainy = transforms.Resize((h, w))(rainy)
         
-        # Random crop for training
+        # Ensure consistent size for batching
+        h, w = rainy.shape[-2:]
+        
         if self.mode == 'train' and self.patch_size > 0:
-            h, w = rainy.shape[-2:]
-            if h > self.patch_size and w > self.patch_size:
+            # Training: Random crop or resize
+            if h >= self.patch_size and w >= self.patch_size:
+                # Random crop
                 top = random.randint(0, h - self.patch_size)
                 left = random.randint(0, w - self.patch_size)
                 rainy = rainy[:, top:top+self.patch_size, left:left+self.patch_size]
                 clean = clean[:, top:top+self.patch_size, left:left+self.patch_size]
+            else:
+                # Resize if smaller than patch size
+                rainy = transforms.Resize((self.patch_size, self.patch_size), 
+                                         interpolation=transforms.InterpolationMode.BILINEAR)(rainy)
+                clean = transforms.Resize((self.patch_size, self.patch_size),
+                                         interpolation=transforms.InterpolationMode.BILINEAR)(clean)
+        else:
+            # Validation/Test: Resize to patch_size for consistent batching
+            if self.patch_size > 0:
+                rainy = transforms.Resize((self.patch_size, self.patch_size),
+                                         interpolation=transforms.InterpolationMode.BILINEAR)(rainy)
+                clean = transforms.Resize((self.patch_size, self.patch_size),
+                                         interpolation=transforms.InterpolationMode.BILINEAR)(clean)
         
-        # Apply augmentation
+        # Apply augmentation (only in training)
         if self.augment:
             rainy, clean = self.augment_data(rainy, clean)
         
