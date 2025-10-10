@@ -41,11 +41,11 @@ loss:
 # Data Settings
 data:
   # For single dataset
-  train_rainy_dir: '/kaggle/input/rain13kdataset/train/train/Rain13K/input'
-  train_clean_dir: '/kaggle/input/rain13kdataset/train/train/Rain13K/target'
-  val_rainy_dir: '/kaggle/input/rain13kdataset/test/test/Rain100H/input'
-  val_clean_dir: '/kaggle/input/rain13kdataset/test/test/Rain100H/target'
-  
+  train_rainy_dir: '/home/trusted-service-user/.cache/kagglehub/datasets/quangtrnminh/rain13kdataset/versions/1/train/train/Rain13K/input'
+  train_clean_dir: '/home/trusted-service-user/.cache/kagglehub/datasets/quangtrnminh/rain13kdataset/versions/1/train/train/Rain13K/target'
+  val_rainy_dir: '/home/trusted-service-user/.cache/kagglehub/datasets/quangtrnminh/rain13kdataset/versions/1/test/test/Rain100H/input'
+  val_clean_dir: '/home/trusted-service-user/.cache/kagglehub/datasets/quangtrnminh/rain13kdataset/versions/1/test/test/Rain100H/target'
+
   # For mixed day/night dataset
   use_mixed_dataset: false
   train_day_rainy_dir: 'data/train/day/rainy'
@@ -102,7 +102,7 @@ resume:
 # Testing
 test:
   checkpoint_path: ''
-  test_rainy_dir: '/kaggle/input/rain13kdataset/test/test/Test100/input'
-  test_clean_dir: '/kaggle/input/rain13kdataset/test/test/Test100/target'
+  test_rainy_dir: '/home/trusted-service-user/.cache/kagglehub/datasets/quangtrnminh/rain13kdataset/versions/1/test/test/Test100/input'
+  test_clean_dir: '/home/trusted-service-user/.cache/kagglehub/datasets/quangtrnminh/rain13kdataset/versions/1/test/test/Test100/target'
   output_dir: 'results'
   save_images: true
